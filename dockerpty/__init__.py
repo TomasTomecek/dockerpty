@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from dockerpty.pty import PseudoTerminal
+from dockerpty.pty import PseudoTerminal, ExecPTY
 
 
 def start(client, container, interactive=True, stdout=None, stderr=None, stdin=None):
@@ -25,3 +25,13 @@ def start(client, container, interactive=True, stdout=None, stderr=None, stdin=N
     """
 
     PseudoTerminal(client, container, interactive=interactive, stdout=stdout, stderr=stderr, stdin=stdin).start()
+
+
+def exec_command(client, container, command, interactive=True, stdout=None, stderr=None, stdin=None):
+    """
+    Run provided command via exec API in provided container.
+
+    This is just a wrapper for PseudoTerminal(client, container).exec_command()
+    """
+    ExecPTY(client, container, interactive=interactive, stdout=stdout, stderr=stderr, stdin=stdin).exec_command(command)
+

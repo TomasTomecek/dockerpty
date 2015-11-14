@@ -249,3 +249,103 @@ class PseudoTerminal(object):
                 except SSLError as e:
                     if 'The operation did not complete' not in e.strerror:
                         raise e
+
+
+class ExecPTY(PseudoTerminal):
+    def __init__(self, client, container, interactive=True, stdout=None, stderr=None, stdin=None):
+        """
+        Initialize the PTY using the docker.Client instance and container dict.
+        """
+        super(ExecPTY, self).__init__(client, container, interactive=interactive,
+                                      stdout=stdout, stderr=stderr, stdin=stdin)
+
+        self.exec_id = None
+
+
+    def exec_info(self):
+        """
+        Thin wrapper around client.inspect_container().
+        """
+        return self.client.exec_inspect(self.exec_id)
+
+
+    def exec_create(self, command):
+        self.exec_id = self.client.exec_create(self.container, command, tty=self.interactive, stdin=self.interactive)
+        return self.exec_id
+
+
+    def start_exec(self):
+        """
+        Returns a tuple of sockets connected to the pty (stdin,stdout,stderr).
+
+        If any of the sockets are not attached in the container, `None` is
+        returned in the tuple.
+        """
+        try:
+            is_tty_on = self.exec_info()["ProcessConfig"]["tty"]
+        except (KeyError, AttributeError):
+            is_tty_on = False
+
+        # stream should be set to True, b/c we want socket no matter what
+        socket = self.client.exec_start_socket(self.exec_id, stream=True, tty=self.interactive)
+        stream = io.Stream(socket)
+        if is_tty_on:
+            return stream
+        else:
+            return io.Demuxer(stream)
+
+
+    def resize(self, size=None):
+        """
+        Resize the container's PTY.
+
+        If `size` is not None, it must be a tuple of (height,width), otherwise
+        it will be determined by the size of the current TTY.
+        """
+
+        if not self.israw():
+            return
+
+        size = size or tty.size(self.stdout)
+
+        if size is not None:
+            rows, cols = size
+            try:
+                self.client.exec_resize(self.exec_id, height=rows, width=cols)
+            except IOError: # Container already exited
+                pass
+
+
+    def exec_command(self, command, **kwargs):
+        """
+        Run provided command via exec API in provided container.
+
+        This will take over the current process' TTY until the container's PTY
+        is closed.
+        """
+        self.exec_create(command)
+        self.run_exec()
+
+
+    def run_exec(self, exec_id=None):
+        exec_id = exec_id or self.exec_id
+        stream = self.start_exec()
+        pumps = []
+
+        if self.interactive:
+            pumps.append(io.Pump(io.Stream(self.stdin), stream, wait_for_output=False))
+
+        pumps.append(io.Pump(stream, io.Stream(self.stdout), propagate_close=False))
+        # FIXME: since exec_start returns a single socket, how do we
+        #        distinguish between stdout and stderr?
+        # pumps.append(io.Pump(stream, io.Stream(self.stderr), propagate_close=False))
+
+        flags = [p.set_blocking(False) for p in pumps]
+
+        try:
+            with WINCHHandler(self):
+                self._hijack_tty(pumps)
+        finally:
+            if flags:
+                for (pump, flag) in zip(pumps, flags):
+                    io.set_blocking(pump, flag)
